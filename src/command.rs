@@ -13,5 +13,8 @@ pub struct Command {
     #[arg(short, long, default_value_t = 5000)]
     pub timeout: u64,
 
+    #[arg(long, default_value_t = 30)]
+    pub hops: u8,
+
     pub address: String,
 }
