@@ -16,5 +16,14 @@ pub struct Command {
     #[arg(long, default_value_t = 30)]
     pub hops: u8,
 
+    #[arg(short, long)]
+    pub port: Option<u16>,
+
+    #[arg(short, long, default_value_t = false)]
+    pub icmp: bool,
+
+    #[arg(short, long, default_value_t = false)]
+    pub udp: bool,
+
     pub address: String,
 }

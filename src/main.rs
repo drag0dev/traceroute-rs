@@ -3,14 +3,23 @@ use clap::Parser;
 
 mod command;
 mod icmp;
+mod udp;
 use command::Command;
 use icmp::icmp_ping;
+use udp::udp_probe;
 
 fn main() {
     let args = Command::parse();
 
     if (args.v4 && args.v6) || (!args.v4 && !args.v6) {
         println!("Malformed input, missing v4 or v6 swtich");
+        return;
+    }
+
+    let mut tracerouting_method_count = args.icmp as usize;
+    tracerouting_method_count += args.udp as usize;
+    if tracerouting_method_count != 1 {
+        println!("Malformed input, only one method of tracerouting must be selected");
         return;
     }
 
@@ -37,5 +46,6 @@ fn main() {
         }
     };
 
-    icmp_ping(addr, args);
+    if args.icmp { icmp_ping(addr, args); }
+    else if args.udp { udp_probe(addr, args); }
 }
