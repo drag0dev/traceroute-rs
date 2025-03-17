@@ -10,7 +10,7 @@ pub struct Command {
     #[arg(long)]
     pub v6: bool,
 
-    #[arg(short, long, default_value_t = 5000)]
+    #[arg(long, default_value_t = 5000)]
     pub timeout: u64,
 
     #[arg(long, default_value_t = 30)]
@@ -24,6 +24,9 @@ pub struct Command {
 
     #[arg(short, long, default_value_t = false)]
     pub udp: bool,
+
+    #[arg(short, long, default_value_t = false)]
+    pub tcp: bool,
 
     pub address: String,
 }
