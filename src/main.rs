@@ -5,6 +5,7 @@ mod command;
 mod icmp;
 mod udp;
 mod tcp;
+mod print;
 use command::Command;
 use icmp::icmp_ping;
 use udp::udp_probe;
