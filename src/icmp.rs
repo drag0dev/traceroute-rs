@@ -28,7 +28,7 @@ pub fn icmp_ping(address: IpAddr, args: Command) {
     let timeout = Duration::from_millis(args.timeout);
     let mut res_icmp_iter = icmp_packet_iter(&mut rx);
 
-    for ttl in 1..args.hops {
+    for ttl in 1..=args.hops {
         let mut target_hit = false;
         for _ in 0..args.probes {
             tx.set_ttl(ttl as u8)
@@ -76,6 +76,7 @@ pub fn icmp_ping(address: IpAddr, args: Command) {
                                 if res_identifier == identifier && res_sequence == ttl as u16 {
                                     res_printer.push_hop(Probe::Unreachable);
                                     got_response = true;
+                                    target_hit = true;
                                     break;
                                 }
                             }
