@@ -19,6 +19,9 @@ pub struct Command {
     #[arg(short, long)]
     pub port: Option<u16>,
 
+    #[arg(long, default_value_t = 3)]
+    pub probes: u16,
+
     #[arg(short, long, default_value_t = false)]
     pub icmp: bool,
 
