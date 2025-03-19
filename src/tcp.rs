@@ -1,19 +1,35 @@
-use crate::Command;
+use crate::{
+    print::{Probe, ProbePrinter},
+    Command
+};
 use pnet::{
     packet::{
         icmp::{IcmpPacket, IcmpTypes},
-        ip::IpNextHeaderProtocols,
-        tcp::{ipv4_checksum, ipv6_checksum, MutableTcpPacket, TcpPacket}, Packet},
+        ip::IpNextHeaderProtocols::{Icmp, Icmpv6, Tcp},
+        tcp::{ipv4_checksum, ipv6_checksum, MutableTcpPacket, TcpPacket},
+        Packet
+    },
     transport::{icmp_packet_iter, tcp_packet_iter, transport_channel}
 };
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    sync::{
+        atomic::{
+            AtomicBool,
+            AtomicU16,
+            Ordering,
+        },
+        mpsc,
+        Arc
+    },
+    thread,
     time::{Duration, Instant}
 };
 use pnet::transport::TransportChannelType::Layer4;
 
 const TCP_BUFFER_SIZE: usize = 8;
 const SOURCE_PORT: u16 = 76;
+const POLLING_TIMEOUT: Duration = Duration::from_millis(5);
 
 pub fn tcp_probe(address: IpAddr, args: Command) {
     let destination_port = args.port.unwrap_or(80);
@@ -21,118 +37,167 @@ pub fn tcp_probe(address: IpAddr, args: Command) {
         .expect("no source ip");
 
     let tcp_protocol = match address {
-        IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp),
+        IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Tcp),
+        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(Tcp),
     };
     let icmp_protocol = match address {
-        IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6),
+        IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Icmp),
+        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(Icmpv6),
     };
 
-    let (mut tx, mut tcp_rx) = transport_channel(4096, Layer4(tcp_protocol))
+    let mut res_printer = ProbePrinter::new();
+
+    let (mut tx, tcp_rx) = transport_channel(4096, Layer4(tcp_protocol))
         .expect("creating tcp transport channel");
-    let (_, mut icmp_rx) = transport_channel(4096, Layer4(icmp_protocol))
+    let (_, icmp_rx) = transport_channel(4096, Layer4(icmp_protocol))
         .expect("creating icmp transport channel");
 
-    // timeout divided by two as a compromise due to a need to check both icmp and tcp responses
-    let timeout = Duration::from_millis(args.timeout/2);
-    let mut res_tcp_iter = tcp_packet_iter(&mut tcp_rx);
-    let mut res_icmp_iter = icmp_packet_iter(&mut icmp_rx);
+    let timeout = Duration::from_millis(args.timeout);
+    let atomic_ttl = Arc::new(AtomicU16::new(0));
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let (res_tx, res_rx) = mpsc::sync_channel::<(Probe, bool)>(1);
 
-    for ttl in 1..args.hops {
-        tx.set_ttl(ttl as u8)
-            .expect("setting ttl");
+    let icmp_handle = {
+        let atomic_ttl = atomic_ttl.clone();
+        let stop_flag = stop_flag.clone();
+        let res_tx = res_tx.clone();
+        thread::spawn(move || {
+            let mut icmp_rx = icmp_rx;
+            let mut res_icmp_iter = icmp_packet_iter(&mut icmp_rx);
+            let mut ttl;
+            loop {
+                if stop_flag.load(Ordering::Relaxed) { break }
 
-        let mut tcp_buffer = [0u8; TCP_BUFFER_SIZE + 20];
-        let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer)
-            .expect("creating tcp packet");
-        tcp_packet.set_source(SOURCE_PORT + (ttl as u16));
-        tcp_packet.set_destination(destination_port);
-        tcp_packet.set_sequence(ttl as u32);
-        tcp_packet.set_acknowledgement(0);
-        tcp_packet.set_data_offset(5);
-        tcp_packet.set_flags(0x02); // SYN flag
-        tcp_packet.set_window(5840);
-        tcp_packet.set_checksum(0);
-        let checksum = match address {
-            IpAddr::V4(addr) => {
-                let source_address = match source_address {
-                    IpAddr::V4(addr) => addr,
-                    IpAddr::V6(_) => unreachable!("mismatch between source and destination ip version"),
-                };
-                let source_address = Ipv4Addr::from(source_address);
-                ipv4_checksum(
-                    &tcp_packet.to_immutable(),
-                    &source_address,
-                    &addr,
-                )
-            },
-            IpAddr::V6(addr) => {
-                let source_address = match source_address {
-                    IpAddr::V4(_) => unreachable!("mismatch between source and destination ip version"),
-                    IpAddr::V6(addr) => addr,
-                };
-                ipv6_checksum(
-                    &tcp_packet.to_immutable(),
-                    &source_address,
-                    &addr,
-                )
-            },
-        };
-        tcp_packet.set_checksum(checksum);
+                if let Ok(Some((packet, address))) = res_icmp_iter.next_with_timeout(POLLING_TIMEOUT) {
+                    ttl = atomic_ttl.load(Ordering::SeqCst);
 
-        tx.send_to(tcp_packet, address)
-            .expect("sending tcp packet");
-
-        let mut response_address = None;
-        let start_time = Instant::now();
-
-        let mut icmp_received = false;
-        while start_time.elapsed() < timeout {
-            if let Ok(Some((packet, address))) = res_icmp_iter.next_with_timeout(timeout) {
-                if let Some(icmp_packet) = IcmpPacket::new(packet.packet()) {
-                    let res_ports = extract_tcp_header_from_icmp_reply(&icmp_packet, args.v6);
-                    if let Some((res_source_port, res_destination_port)) = res_ports {
-                        if res_source_port == SOURCE_PORT + (ttl as u16) && res_destination_port == destination_port {
-                            match icmp_packet.get_icmp_type() {
-                                IcmpTypes::TimeExceeded => {
-                                    response_address = Some(address);
-                                    icmp_received = true;
-                                    break;
-                                },
-                                IcmpTypes::DestinationUnreachable => {
-                                    println!("Hop: {}: {}", ttl, address);
-                                    return;
-                                },
-                                _ => {}
+                    if let Some(icmp_packet) = IcmpPacket::new(packet.packet()) {
+                        let res_ports = extract_tcp_header_from_icmp_reply(&icmp_packet, args.v6);
+                        if let Some((res_source_port, res_destination_port)) = res_ports {
+                            if res_source_port == SOURCE_PORT + ttl && res_destination_port == destination_port {
+                                match icmp_packet.get_icmp_type() {
+                                    IcmpTypes::TimeExceeded => {
+                                        let probe = Probe::Response(address, Duration::ZERO);
+                                        res_tx.try_send((probe, false)).unwrap();
+                                    },
+                                    IcmpTypes::DestinationUnreachable => {
+                                        let probe = Probe::Response(address, Duration::ZERO);
+                                        res_tx.try_send((probe, true)).unwrap();
+                                    },
+                                    _ => {}
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        if !icmp_received {
-            let start_time = Instant::now();
-            while start_time.elapsed() < timeout {
-                if let Ok(Some((packet, address))) = res_tcp_iter.next_with_timeout(timeout) {
+        })
+    };
+
+    let tcp_handle = {
+        let atomic_ttl = atomic_ttl.clone();
+        let stop_flag = stop_flag.clone();
+        let res_tx = res_tx.clone();
+        thread::spawn(move || {
+            let mut tcp_rx = tcp_rx;
+            let mut res_tcp_iter = tcp_packet_iter(&mut tcp_rx);
+            let mut ttl;
+            loop {
+                if stop_flag.load(Ordering::Acquire) { break }
+                if let Ok(Some((packet, address))) = res_tcp_iter.next_with_timeout(POLLING_TIMEOUT) {
                     if let Some(tcp_packet) = TcpPacket::new(packet.packet()) {
-                        if tcp_packet.get_destination() == SOURCE_PORT + (ttl as u16) && tcp_packet.get_source() == destination_port {
+                        ttl = atomic_ttl.load(Ordering::SeqCst);
+                        if tcp_packet.get_destination() == SOURCE_PORT + ttl && tcp_packet.get_source() == destination_port {
                             let tcp_flags = tcp_packet.get_flags();
                             // RST (0x04) or SYN+ACK (0x12) expected responses from the final hop
                             if ((tcp_flags & 0x04) != 0x0) || ((tcp_flags & 0x12) != 0x0) {
-                                    println!("Hop: {}: {}", ttl, address);
-                                    return
+                                let probe = Probe::Response(address, Duration::ZERO);
+                                res_tx.try_send((probe, true)).unwrap();
                             }
                         }
                     }
                 }
+
             }
+        })
+    };
+
+    for ttl in 1..=args.hops {
+        let mut target_hit = false;
+        for _ in 0..args.probes {
+            tx.set_ttl(ttl as u8)
+                .expect("setting ttl");
+
+            let mut tcp_buffer = [0u8; TCP_BUFFER_SIZE + 20];
+            let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer)
+                .expect("creating tcp packet");
+            tcp_packet.set_source(SOURCE_PORT + (ttl as u16));
+            tcp_packet.set_destination(destination_port);
+            tcp_packet.set_sequence(ttl as u32);
+            tcp_packet.set_acknowledgement(0);
+            tcp_packet.set_data_offset(5);
+            tcp_packet.set_flags(0x02); // SYN flag
+            tcp_packet.set_window(5840);
+            tcp_packet.set_checksum(0);
+            let checksum = match address {
+                IpAddr::V4(addr) => {
+                    let source_address = match source_address {
+                        IpAddr::V4(addr) => addr,
+                        IpAddr::V6(_) => unreachable!("mismatch between source and destination ip version"),
+                    };
+                    let source_address = Ipv4Addr::from(source_address);
+                    ipv4_checksum(
+                        &tcp_packet.to_immutable(),
+                        &source_address,
+                        &addr,
+                    )
+                },
+                IpAddr::V6(addr) => {
+                    let source_address = match source_address {
+                        IpAddr::V4(_) => unreachable!("mismatch between source and destination ip version"),
+                        IpAddr::V6(addr) => addr,
+                    };
+                    ipv6_checksum(
+                        &tcp_packet.to_immutable(),
+                        &source_address,
+                        &addr,
+                    )
+                },
+            };
+            tcp_packet.set_checksum(checksum);
+
+            // drain everything from the channel
+            while let Ok(_) = res_rx.try_recv() { }
+
+            atomic_ttl.store(ttl as u16, Ordering::SeqCst);
+            tx.send_to(tcp_packet, address)
+                .expect("sending tcp packet");
+
+            let start_time = Instant::now();
+
+            let mut got_response = false;
+            if let Ok((probe, end)) = res_rx.recv_timeout(timeout) {
+                got_response = true;
+                let probe = match probe {
+                    Probe::Unreachable => unreachable!(),
+                    Probe::Response(addr, _) => {
+                        Probe::Response(addr, start_time.elapsed())
+                    }
+                };
+                target_hit = end;
+                res_printer.push_hop(probe);
+            }
+
+
+            if !got_response { res_printer.push_hop(Probe::Unreachable); }
         }
-        match response_address {
-            Some(response_address) => println!("Hop: {}: {}", ttl, response_address),
-            None => println!("Hop: {}: No response", ttl),
-        }
+        if target_hit { break }
+        res_printer.next_ttl();
     }
+
+    stop_flag.swap(true, Ordering::Relaxed);
+    let _ = icmp_handle.join();
+    let _ = tcp_handle.join();
 }
 
 fn extract_tcp_header_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: bool) -> Option<(u16, u16)> {
