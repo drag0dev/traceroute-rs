@@ -31,7 +31,7 @@ impl ProbePrinter {
                 if let Some(hostname) = hostname { msg.push_str(&format!("{hostname} ")); }
                 else { msg.push_str(&format!("{address} ")); }
                 msg.push_str(&format!("({address}) "));
-                msg.push_str(&format!("{} ms", duration.as_millis()));
+                msg.push_str(&format!("{}.{} ms", duration.as_micros()/1000,duration.as_micros() % 1000));
             }
         }
         println!("{msg}");
