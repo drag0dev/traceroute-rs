@@ -14,7 +14,7 @@ use pnet::transport::TransportChannelType::Layer4;
 
 const ICMP_BUFFER_SIZE: usize = 64;
 
-pub fn icmp_ping(address: IpAddr, args: Command) -> Result<()> {
+pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
     let protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp),
         IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6),

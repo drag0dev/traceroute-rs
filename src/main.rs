@@ -2,14 +2,16 @@ use std::{net::{IpAddr, Ipv4Addr, Ipv6Addr}, str::FromStr};
 use clap::Parser;
 
 mod command;
-mod icmp;
-mod udp;
-mod tcp;
+mod ipv4_probes;
+mod ipv6_probes;
 mod print;
 use command::Command;
-use icmp::icmp_ping;
-use udp::udp_probe;
-use tcp::tcp_probe;
+use ipv4_probes::icmp_probe;
+use ipv4_probes::udp_probe;
+use ipv4_probes::tcp_probe;
+use ipv6_probes::icmp_probev6;
+use ipv6_probes::udp_probev6;
+use ipv6_probes::tcp_probev6;
 
 fn main() {
     let args = Command::parse();
@@ -50,10 +52,17 @@ fn main() {
         }
     };
 
-    let e = if args.icmp { icmp_ping(addr, args) }
-    else if args.udp { udp_probe(addr, args) }
-    else if args.tcp { tcp_probe(addr, args) }
-    else { unreachable!("no tracerouting method selected"); };
+    let e = if args.v4 {
+        if args.icmp { icmp_probe(addr, args) }
+        else if args.udp { udp_probe(addr, args) }
+        else if args.tcp { tcp_probe(addr, args) }
+        else { unreachable!("no tracerouting method selected"); }
+    } else {
+        if args.icmp { icmp_probev6(addr, args) }
+        else if args.udp { udp_probev6(addr, args) }
+        else if args.tcp { tcp_probev6(addr, args) }
+        else { unreachable!("no tracerouting method selected"); }
+    };
 
     if let Err(e) = e {
         println!("error: {}", e);
