@@ -50,8 +50,15 @@ fn main() {
         }
     };
 
-    if args.icmp { icmp_ping(addr, args); }
-    else if args.udp { udp_probe(addr, args); }
-    else if args.tcp { tcp_probe(addr, args); }
-    else { unreachable!("no tracerouting method selected"); }
+    let e = if args.icmp { icmp_ping(addr, args) }
+    else if args.udp { udp_probe(addr, args) }
+    else if args.tcp { tcp_probe(addr, args) }
+    else { unreachable!("no tracerouting method selected"); };
+
+    if let Err(e) = e {
+        println!("error: {}", e);
+        for (i, small_e) in e.chain().enumerate().skip(1) {
+            println!("{}{small_e}", "\t".repeat(i));
+        }
+    }
 }

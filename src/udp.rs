@@ -2,6 +2,7 @@ use crate::print::{Probe, ProbePrinter};
 use crate::Command;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
+use anyhow::{Context, Result};
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
 use pnet::packet::ip::IpNextHeaderProtocols::{Udp, Icmp, Icmpv6};
 use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
@@ -12,7 +13,7 @@ use pnet::transport::TransportChannelType::Layer4;
 const UDP_BUFFER_SIZE: usize = 8;
 const SOURCE_PORT: u16 = 33434;
 
-pub fn udp_probe(address: IpAddr, args: Command) {
+pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
     let destination_port = args.port.unwrap_or(33434);
     let udp_protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Udp),
@@ -26,9 +27,9 @@ pub fn udp_probe(address: IpAddr, args: Command) {
     let mut res_printer = ProbePrinter::new();
 
     let (mut tx, _) = transport_channel(4096, Layer4(udp_protocol))
-        .expect("creating udp transport channel");
+        .context("creating udp transport channel")?;
     let (_, mut rx) = transport_channel(4096, Layer4(icmp_protocol))
-        .expect("creating icmp transport channel");
+        .context("creating icmp transport channel")?;
 
     let timeout = Duration::from_millis(args.timeout);
     let mut res_icmp_iter = icmp_packet_iter(&mut rx);
@@ -37,17 +38,18 @@ pub fn udp_probe(address: IpAddr, args: Command) {
         let mut target_hit = false;
         for _ in 0..args.probes {
             tx.set_ttl(ttl as u8)
-                .expect("setting ttl");
+                .context("setting ttl")?;
             let mut udp_buffer = [0u8; UDP_BUFFER_SIZE + 8];
 
-            let mut udp_packet = MutableUdpPacket::new(&mut udp_buffer).unwrap();
+            let mut udp_packet = MutableUdpPacket::new(&mut udp_buffer)
+                .context("creating udp packet")?;
             udp_packet.set_source(SOURCE_PORT + (ttl as u16));
             udp_packet.set_destination(destination_port);
             udp_packet.set_length(UDP_BUFFER_SIZE as u16 + 8);
             udp_packet.set_payload(&[0u8; 8]);
 
             tx.send_to(udp_packet, address)
-                .expect("sending udp packet");
+                .context("sending udp packet")?;
 
             let start_time = Instant::now();
 
@@ -82,6 +84,7 @@ pub fn udp_probe(address: IpAddr, args: Command) {
         if target_hit { break }
         res_printer.next_ttl();
     }
+    Ok(())
 }
 
 fn extract_udp_source_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: bool) -> Option<u16> {

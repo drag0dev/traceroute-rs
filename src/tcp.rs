@@ -2,6 +2,7 @@ use crate::{
     print::{Probe, ProbePrinter},
     Command
 };
+use anyhow::{anyhow, Context, Result};
 use pnet::{
     packet::{
         icmp::{IcmpPacket, IcmpTypes},
@@ -31,10 +32,10 @@ const TCP_BUFFER_SIZE: usize = 8;
 const SOURCE_PORT: u16 = 76;
 const POLLING_TIMEOUT: Duration = Duration::from_millis(5);
 
-pub fn tcp_probe(address: IpAddr, args: Command) {
+pub fn tcp_probe(address: IpAddr, args: Command) -> Result<()> {
     let destination_port = args.port.unwrap_or(80);
     let source_address = discover_source_ip(address, SOURCE_PORT)
-        .expect("no source ip");
+        .context("no source ip")?;
 
     let tcp_protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Tcp),
@@ -48,9 +49,9 @@ pub fn tcp_probe(address: IpAddr, args: Command) {
     let mut res_printer = ProbePrinter::new();
 
     let (mut tx, tcp_rx) = transport_channel(4096, Layer4(tcp_protocol))
-        .expect("creating tcp transport channel");
+        .context("creating tcp transport channel")?;
     let (_, icmp_rx) = transport_channel(4096, Layer4(icmp_protocol))
-        .expect("creating icmp transport channel");
+        .context("creating icmp transport channel")?;
 
     let timeout = Duration::from_millis(args.timeout);
     let atomic_ttl = Arc::new(AtomicU16::new(0));
@@ -78,11 +79,11 @@ pub fn tcp_probe(address: IpAddr, args: Command) {
                                 match icmp_packet.get_icmp_type() {
                                     IcmpTypes::TimeExceeded => {
                                         let probe = Probe::Response(address, Duration::ZERO);
-                                        res_tx.try_send((probe, false)).unwrap();
+                                        let _ = res_tx.try_send((probe, false));
                                     },
                                     IcmpTypes::DestinationUnreachable => {
                                         let probe = Probe::Response(address, Duration::ZERO);
-                                        res_tx.try_send((probe, true)).unwrap();
+                                        let _ = res_tx.try_send((probe, true));
                                     },
                                     _ => {}
                                 }
@@ -112,7 +113,7 @@ pub fn tcp_probe(address: IpAddr, args: Command) {
                             // RST (0x04) or SYN+ACK (0x12) expected responses from the final hop
                             if ((tcp_flags & 0x04) != 0x0) || ((tcp_flags & 0x12) != 0x0) {
                                 let probe = Probe::Response(address, Duration::ZERO);
-                                res_tx.try_send((probe, true)).unwrap();
+                                let _ = res_tx.try_send((probe, true));
                             }
                         }
                     }
@@ -126,11 +127,11 @@ pub fn tcp_probe(address: IpAddr, args: Command) {
         let mut target_hit = false;
         for _ in 0..args.probes {
             tx.set_ttl(ttl as u8)
-                .expect("setting ttl");
+                .context("setting ttl")?;
 
             let mut tcp_buffer = [0u8; TCP_BUFFER_SIZE + 20];
             let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer)
-                .expect("creating tcp packet");
+                .context("creating tcp packet")?;
             tcp_packet.set_source(SOURCE_PORT + (ttl as u16));
             tcp_packet.set_destination(destination_port);
             tcp_packet.set_sequence(ttl as u32);
@@ -171,7 +172,7 @@ pub fn tcp_probe(address: IpAddr, args: Command) {
 
             atomic_ttl.store(ttl as u16, Ordering::SeqCst);
             tx.send_to(tcp_packet, address)
-                .expect("sending tcp packet");
+                .context("sending tcp packet")?;
 
             let start_time = Instant::now();
 
@@ -198,6 +199,8 @@ pub fn tcp_probe(address: IpAddr, args: Command) {
     stop_flag.swap(true, Ordering::Relaxed);
     let _ = icmp_handle.join();
     let _ = tcp_handle.join();
+
+    Ok(())
 }
 
 fn extract_tcp_header_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: bool) -> Option<(u16, u16)> {
@@ -216,18 +219,19 @@ fn extract_tcp_header_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: 
     Some((source_port, destination_port))
 }
 
-fn discover_source_ip(destination: IpAddr, port: u16) -> Option<IpAddr> {
+fn discover_source_ip(destination: IpAddr, port: u16) -> Result<IpAddr> {
     let socket = if destination.is_ipv6() {
-        UdpSocket::bind("[::]:0").expect("failed to bind UDP socket for IPv6")
+        UdpSocket::bind("[::]:0").context("failed to bind UDP socket for IPv6")
     } else {
-        UdpSocket::bind("0.0.0.0:0").expect("failed to bind UDP socket for IPv4")
+        UdpSocket::bind("0.0.0.0:0").context("failed to bind UDP socket for IPv4")
     };
+    let socket = socket?;
 
     let destination_socket = SocketAddr::new(destination, port);
     if let Err(e) = socket.connect(destination_socket) {
-        println!("Failed to connect to destination: {}", e);
-        return None;
+        let e = anyhow!("failed to connect to destination: {}", e);
+        return Err(e);
     }
 
-    if let Ok(local_addr) = socket.local_addr() { Some(local_addr.ip()) } else { None }
+    if let Ok(local_addr) = socket.local_addr() { Ok(local_addr.ip()) } else { Err(anyhow!("no local address")) }
 }

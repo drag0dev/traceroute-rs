@@ -3,6 +3,7 @@ use crate::Command;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, Result};
 use pnet::packet::icmp::echo_reply::EchoReplyPacket;
 use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
@@ -13,7 +14,7 @@ use pnet::transport::TransportChannelType::Layer4;
 
 const ICMP_BUFFER_SIZE: usize = 64;
 
-pub fn icmp_ping(address: IpAddr, args: Command) {
+pub fn icmp_ping(address: IpAddr, args: Command) -> Result<()> {
     let protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp),
         IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6),
@@ -22,7 +23,7 @@ pub fn icmp_ping(address: IpAddr, args: Command) {
     let mut res_printer = ProbePrinter::new();
 
     let (mut tx, mut rx) = transport_channel(4096, Layer4(protocol))
-        .expect("creating transport channel");
+        .context("creating transport channel")?;
 
     let identifier: u16 = std::process::id() as u16;
     let timeout = Duration::from_millis(args.timeout);
@@ -32,10 +33,11 @@ pub fn icmp_ping(address: IpAddr, args: Command) {
         let mut target_hit = false;
         for _ in 0..args.probes {
             tx.set_ttl(ttl as u8)
-                .expect("setting ttl");
+                .context("setting ttl")?;
             let mut icmp_buffer = [0u8; ICMP_BUFFER_SIZE];
 
-            let mut icmp_packet = MutableEchoRequestPacket::new(&mut icmp_buffer).unwrap();
+            let mut icmp_packet = MutableEchoRequestPacket::new(&mut icmp_buffer)
+                .context("creating icmp packet")?;
             icmp_packet.set_icmp_type(IcmpTypes::EchoRequest);
             icmp_packet.set_identifier(identifier);
             icmp_packet.set_sequence_number(ttl as u16);
@@ -43,7 +45,7 @@ pub fn icmp_ping(address: IpAddr, args: Command) {
             icmp_packet.set_checksum(checksum);
 
             tx.send_to(icmp_packet, address)
-                .expect("sending icmp packet");
+                .context("sending icmp packet")?;
 
             let start_time = Instant::now();
 
@@ -90,6 +92,8 @@ pub fn icmp_ping(address: IpAddr, args: Command) {
         if target_hit { break }
         res_printer.next_ttl();
     }
+
+    Ok(())
 }
 
 fn extract_original_icmp_info_from_reply(icmp_packet: &IcmpPacket, is_ipv6: bool) -> Option<(u16, u16)> {
