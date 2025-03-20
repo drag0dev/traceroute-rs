@@ -69,24 +69,21 @@ pub fn tcp_probe(address: IpAddr, args: Command) -> Result<()> {
             loop {
                 if stop_flag.load(Ordering::Relaxed) { break }
 
-                if let Ok(Some((packet, address))) = res_icmp_iter.next_with_timeout(POLLING_TIMEOUT) {
+                if let Ok(Some((icmp_packet, address))) = res_icmp_iter.next_with_timeout(POLLING_TIMEOUT) {
                     ttl = atomic_ttl.load(Ordering::SeqCst);
-
-                    if let Some(icmp_packet) = IcmpPacket::new(packet.packet()) {
-                        let res_ports = extract_tcp_header_from_icmp_reply(&icmp_packet);
-                        if let Some((res_source_port, res_destination_port)) = res_ports {
-                            if res_source_port == SOURCE_PORT + ttl && res_destination_port == destination_port {
-                                match icmp_packet.get_icmp_type() {
-                                    IcmpTypes::TimeExceeded => {
-                                        let probe = Probe::Response(address, Duration::ZERO);
-                                        let _ = res_tx.try_send((probe, false));
-                                    },
-                                    IcmpTypes::DestinationUnreachable => {
-                                        let probe = Probe::Response(address, Duration::ZERO);
-                                        let _ = res_tx.try_send((probe, true));
-                                    },
-                                    _ => {}
-                                }
+                    let res_ports = extract_tcp_header_from_icmp_reply(&icmp_packet);
+                    if let Some((res_source_port, res_destination_port)) = res_ports {
+                        if res_source_port == SOURCE_PORT + ttl && res_destination_port == destination_port {
+                            match icmp_packet.get_icmp_type() {
+                                IcmpTypes::TimeExceeded => {
+                                    let probe = Probe::Response(address, Duration::ZERO);
+                                    let _ = res_tx.try_send((probe, false));
+                                },
+                                IcmpTypes::DestinationUnreachable => {
+                                    let probe = Probe::Response(address, Duration::ZERO);
+                                    let _ = res_tx.try_send((probe, true));
+                                },
+                                _ => {}
                             }
                         }
                     }
@@ -105,16 +102,14 @@ pub fn tcp_probe(address: IpAddr, args: Command) -> Result<()> {
             let mut ttl;
             loop {
                 if stop_flag.load(Ordering::Acquire) { break }
-                if let Ok(Some((packet, address))) = res_tcp_iter.next_with_timeout(POLLING_TIMEOUT) {
-                    if let Some(tcp_packet) = TcpPacket::new(packet.packet()) {
-                        ttl = atomic_ttl.load(Ordering::SeqCst);
-                        if tcp_packet.get_destination() == SOURCE_PORT + ttl && tcp_packet.get_source() == destination_port {
-                            let tcp_flags = tcp_packet.get_flags();
-                            // RST (0x04) or SYN+ACK (0x12) expected responses from the final hop
-                            if ((tcp_flags & 0x04) != 0x0) || ((tcp_flags & 0x12) != 0x0) {
-                                let probe = Probe::Response(address, Duration::ZERO);
-                                let _ = res_tx.try_send((probe, true));
-                            }
+                if let Ok(Some((tcp_packet, address))) = res_tcp_iter.next_with_timeout(POLLING_TIMEOUT) {
+                    ttl = atomic_ttl.load(Ordering::SeqCst);
+                    if tcp_packet.get_destination() == SOURCE_PORT + ttl && tcp_packet.get_source() == destination_port {
+                        let tcp_flags = tcp_packet.get_flags();
+                        // RST (0x04) or SYN+ACK (0x12) expected responses from the final hop
+                        if ((tcp_flags & 0x04) != 0x0) || ((tcp_flags & 0x12) != 0x0) {
+                            let probe = Probe::Response(address, Duration::ZERO);
+                            let _ = res_tx.try_send((probe, true));
                         }
                     }
                 }

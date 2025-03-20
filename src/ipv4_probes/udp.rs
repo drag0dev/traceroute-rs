@@ -55,25 +55,23 @@ pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
 
             let mut got_response = false;
             while start_time.elapsed() < timeout {
-                if let Ok(Some((packet, address))) = res_icmp_iter.next_with_timeout(timeout) {
-                    if let Some(icmp_packet) = IcmpPacket::new(packet.packet()) {
-                        let resp_source_port = extract_udp_source_from_icmp_reply(&icmp_packet);
-                        if let Some(resp_source_port) = resp_source_port {
-                            if resp_source_port == SOURCE_PORT + (ttl as u16) {
-                                match icmp_packet.get_icmp_type() {
-                                    IcmpTypes::TimeExceeded => {
-                                        res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
-                                        got_response = true;
-                                        break;
-                                    },
-                                    IcmpTypes::DestinationUnreachable => {
-                                        res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
-                                        target_hit = true;
-                                        got_response = true;
-                                        break;
-                                    },
-                                    _ => {}
-                                }
+                if let Ok(Some((icmp_packet, address))) = res_icmp_iter.next_with_timeout(timeout) {
+                    let resp_source_port = extract_udp_source_from_icmp_reply(&icmp_packet);
+                    if let Some(resp_source_port) = resp_source_port {
+                        if resp_source_port == SOURCE_PORT + (ttl as u16) {
+                            match icmp_packet.get_icmp_type() {
+                                IcmpTypes::TimeExceeded => {
+                                    res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
+                                    got_response = true;
+                                    break;
+                                },
+                                IcmpTypes::DestinationUnreachable => {
+                                    res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
+                                    target_hit = true;
+                                    got_response = true;
+                                    break;
+                                },
+                                _ => {}
                             }
                         }
                     }
