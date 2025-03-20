@@ -17,7 +17,7 @@ const ICMP_BUFFER_SIZE: usize = 64;
 pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
     let protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6),
+        IpAddr::V6(_) => unreachable!("passing ipv6 address to ipv4 probe")
     };
 
     let mut res_printer = ProbePrinter::new();
@@ -65,7 +65,7 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
                             }
                         },
                         IcmpTypes::TimeExceeded => {
-                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet, args.v6) {
+                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet) {
                                 if res_identifier == identifier && res_sequence == ttl as u16 {
                                     res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
                                     got_response = true;
@@ -74,7 +74,7 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
                             }
                         },
                         IcmpTypes::DestinationUnreachable => {
-                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet, args.v6) {
+                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet) {
                                 if res_identifier == identifier && res_sequence == ttl as u16 {
                                     res_printer.push_hop(Probe::Unreachable);
                                     got_response = true;
@@ -96,11 +96,11 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
     Ok(())
 }
 
-fn extract_original_icmp_info_from_reply(icmp_packet: &IcmpPacket, is_ipv6: bool) -> Option<(u16, u16)> {
+fn extract_original_icmp_info_from_reply(icmp_packet: &IcmpPacket) -> Option<(u16, u16)> {
     let icmp_payload = icmp_packet.payload();
 
     // +4 because there is four bytes of padding added to the beginning of the payload
-    let ip_header_len = if is_ipv6 { 40 } else { 20 } + 4;
+    let ip_header_len = 20 + 4;
 
     if icmp_payload.len() < ip_header_len + 8 { return None; }
 

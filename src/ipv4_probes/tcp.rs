@@ -6,8 +6,8 @@ use anyhow::{anyhow, Context, Result};
 use pnet::{
     packet::{
         icmp::{IcmpPacket, IcmpTypes},
-        ip::IpNextHeaderProtocols::{Icmp, Icmpv6, Tcp},
-        tcp::{ipv4_checksum, ipv6_checksum, MutableTcpPacket, TcpPacket},
+        ip::IpNextHeaderProtocols::{Icmp, Tcp},
+        tcp::{ipv4_checksum, MutableTcpPacket, TcpPacket},
         Packet
     },
     transport::{icmp_packet_iter, tcp_packet_iter, transport_channel}
@@ -39,11 +39,11 @@ pub fn tcp_probe(address: IpAddr, args: Command) -> Result<()> {
 
     let tcp_protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Tcp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(Tcp),
+        IpAddr::V6(_) => unreachable!("passing ipv6 address to ipv4 probe")
     };
     let icmp_protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Icmp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(Icmpv6),
+        IpAddr::V6(_) => unreachable!("passing ipv6 address to ipv4 probe")
     };
 
     let mut res_printer = ProbePrinter::new();
@@ -73,7 +73,7 @@ pub fn tcp_probe(address: IpAddr, args: Command) -> Result<()> {
                     ttl = atomic_ttl.load(Ordering::SeqCst);
 
                     if let Some(icmp_packet) = IcmpPacket::new(packet.packet()) {
-                        let res_ports = extract_tcp_header_from_icmp_reply(&icmp_packet, args.v6);
+                        let res_ports = extract_tcp_header_from_icmp_reply(&icmp_packet);
                         if let Some((res_source_port, res_destination_port)) = res_ports {
                             if res_source_port == SOURCE_PORT + ttl && res_destination_port == destination_port {
                                 match icmp_packet.get_icmp_type() {
@@ -153,17 +153,7 @@ pub fn tcp_probe(address: IpAddr, args: Command) -> Result<()> {
                         &addr,
                     )
                 },
-                IpAddr::V6(addr) => {
-                    let source_address = match source_address {
-                        IpAddr::V4(_) => unreachable!("mismatch between source and destination ip version"),
-                        IpAddr::V6(addr) => addr,
-                    };
-                    ipv6_checksum(
-                        &tcp_packet.to_immutable(),
-                        &source_address,
-                        &addr,
-                    )
-                },
+                IpAddr::V6(_) => { unreachable!("passing ipv6 address to ipv4 probe") },
             };
             tcp_packet.set_checksum(checksum);
 
@@ -203,11 +193,11 @@ pub fn tcp_probe(address: IpAddr, args: Command) -> Result<()> {
     Ok(())
 }
 
-fn extract_tcp_header_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: bool) -> Option<(u16, u16)> {
+fn extract_tcp_header_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket) -> Option<(u16, u16)> {
     let icmp_payload = icmp_packet.payload();
 
     // +4 because there is four bytes of padding added to the beginning of the payload
-    let ip_header_len = if is_ipv6 { 40 } else { 20 } + 4;
+    let ip_header_len = 20 + 4;
 
     // +4 for source and destination port in the tcp header
     if icmp_payload.len() < ip_header_len + 4 { return None; }
@@ -220,11 +210,7 @@ fn extract_tcp_header_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: 
 }
 
 fn discover_source_ip(destination: IpAddr, port: u16) -> Result<IpAddr> {
-    let socket = if destination.is_ipv6() {
-        UdpSocket::bind("[::]:0").context("failed to bind UDP socket for IPv6")
-    } else {
-        UdpSocket::bind("0.0.0.0:0").context("failed to bind UDP socket for IPv4")
-    };
+    let socket = UdpSocket::bind("0.0.0.0:0").context("failed to bind UDP socket for IPv4");
     let socket = socket?;
 
     let destination_socket = SocketAddr::new(destination, port);

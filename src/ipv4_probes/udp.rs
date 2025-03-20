@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
-use pnet::packet::ip::IpNextHeaderProtocols::{Udp, Icmp, Icmpv6};
+use pnet::packet::ip::IpNextHeaderProtocols::{Udp, Icmp};
 use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
 use pnet::packet::Packet;
 use pnet::transport::{icmp_packet_iter, transport_channel};
@@ -17,11 +17,11 @@ pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
     let destination_port = args.port.unwrap_or(33434);
     let udp_protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Udp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv4(Udp),
+        IpAddr::V6(_) => unreachable!("passing ipv6 address to ipv4 probe")
     };
     let icmp_protocol = match address {
         IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Icmp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(Icmpv6),
+        IpAddr::V6(_) => unreachable!("passing ipv6 address to ipv4 probe")
     };
 
     let mut res_printer = ProbePrinter::new();
@@ -57,7 +57,7 @@ pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
             while start_time.elapsed() < timeout {
                 if let Ok(Some((packet, address))) = res_icmp_iter.next_with_timeout(timeout) {
                     if let Some(icmp_packet) = IcmpPacket::new(packet.packet()) {
-                        let resp_source_port = extract_udp_source_from_icmp_reply(&icmp_packet, args.v6);
+                        let resp_source_port = extract_udp_source_from_icmp_reply(&icmp_packet);
                         if let Some(resp_source_port) = resp_source_port {
                             if resp_source_port == SOURCE_PORT + (ttl as u16) {
                                 match icmp_packet.get_icmp_type() {
@@ -87,11 +87,11 @@ pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
     Ok(())
 }
 
-fn extract_udp_source_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: bool) -> Option<u16> {
+fn extract_udp_source_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket) -> Option<u16> {
     let icmp_payload = icmp_packet.payload();
 
     // +4 because there is four bytes of padding added to the beginning of the payload
-    let ip_header_len = if is_ipv6 { 40 } else { 20 } + 4;
+    let ip_header_len = 20 + 4;
 
     if icmp_payload.len() < ip_header_len + 8 { return None; }
 
