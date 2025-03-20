@@ -7,7 +7,7 @@ use pnet::{
     packet::{
         icmp::{IcmpPacket, IcmpTypes},
         ip::IpNextHeaderProtocols::{Icmp, Tcp},
-        tcp::{ipv4_checksum, MutableTcpPacket, TcpPacket},
+        tcp::{ipv4_checksum, MutableTcpPacket},
         Packet
     },
     transport::{icmp_packet_iter, tcp_packet_iter, transport_channel}

@@ -4,19 +4,19 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use pnet::packet::icmp::echo_reply::EchoReplyPacket;
-use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
-use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
+use pnet::packet::icmpv6::echo_reply::EchoReplyPacket;
+use pnet::packet::icmpv6::echo_request::MutableEchoRequestPacket;
+use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Types};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::Packet;
-use pnet::transport::{transport_channel, icmp_packet_iter};
+use pnet::transport::{icmpv6_packet_iter, transport_channel};
 use pnet::transport::TransportChannelType::Layer4;
 
 const ICMP_BUFFER_SIZE: usize = 64;
 
 pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
     let protocol = match address {
-        IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp),
+        IpAddr::V4(_) => unreachable!("passing ipv4 address to ipv6 probe"),
         IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(IpNextHeaderProtocols::Icmpv6),
     };
 
@@ -27,7 +27,7 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
 
     let identifier: u16 = std::process::id() as u16;
     let timeout = Duration::from_millis(args.timeout);
-    let mut res_icmp_iter = icmp_packet_iter(&mut rx);
+    let mut res_icmp_iter = icmpv6_packet_iter(&mut rx);
 
     for ttl in 1..=args.hops {
         let mut target_hit = false;
@@ -38,7 +38,7 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
 
             let mut icmp_packet = MutableEchoRequestPacket::new(&mut icmp_buffer)
                 .context("creating icmp packet")?;
-            icmp_packet.set_icmp_type(IcmpTypes::EchoRequest);
+            icmp_packet.set_icmpv6_type(Icmpv6Types::EchoRequest);
             icmp_packet.set_identifier(identifier);
             icmp_packet.set_sequence_number(ttl as u16);
             let checksum = pnet::util::checksum(icmp_packet.packet(), icmp_packet.packet().len());
@@ -52,8 +52,8 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
             let mut got_response = false;
             while start_time.elapsed() < timeout {
                 if let Ok(Some((icmp_packet, address))) = res_icmp_iter.next_with_timeout(timeout) {
-                    match icmp_packet.get_icmp_type() {
-                        IcmpTypes::EchoReply => {
+                    match icmp_packet.get_icmpv6_type() {
+                        Icmpv6Types::EchoReply => {
                             if let Some(reply_packet) = EchoReplyPacket::new(icmp_packet.packet()) {
                                 if reply_packet.get_identifier() == identifier &&
                                     reply_packet.get_sequence_number() == ttl as u16 {
@@ -64,8 +64,8 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
                                 }
                             }
                         },
-                        IcmpTypes::TimeExceeded => {
-                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet, args.v6) {
+                        Icmpv6Types::TimeExceeded => {
+                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet) {
                                 if res_identifier == identifier && res_sequence == ttl as u16 {
                                     res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
                                     got_response = true;
@@ -73,8 +73,8 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
                                 }
                             }
                         },
-                        IcmpTypes::DestinationUnreachable => {
-                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet, args.v6) {
+                        Icmpv6Types::DestinationUnreachable => {
+                            if let Some((res_identifier, res_sequence)) = extract_original_icmp_info_from_reply(&icmp_packet) {
                                 if res_identifier == identifier && res_sequence == ttl as u16 {
                                     res_printer.push_hop(Probe::Unreachable);
                                     got_response = true;
@@ -96,11 +96,11 @@ pub fn icmp_probe(address: IpAddr, args: Command) -> Result<()> {
     Ok(())
 }
 
-fn extract_original_icmp_info_from_reply(icmp_packet: &IcmpPacket, is_ipv6: bool) -> Option<(u16, u16)> {
+fn extract_original_icmp_info_from_reply(icmp_packet: &Icmpv6Packet) -> Option<(u16, u16)> {
     let icmp_payload = icmp_packet.payload();
 
     // +4 because there is four bytes of padding added to the beginning of the payload
-    let ip_header_len = if is_ipv6 { 40 } else { 20 } + 4;
+    let ip_header_len = 40 + 4;
 
     if icmp_payload.len() < ip_header_len + 8 { return None; }
 

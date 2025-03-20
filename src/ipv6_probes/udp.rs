@@ -3,11 +3,11 @@ use crate::Command;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
-use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
-use pnet::packet::ip::IpNextHeaderProtocols::{Udp, Icmp, Icmpv6};
+use pnet::packet::icmpv6::{Icmpv6Packet, Icmpv6Types};
+use pnet::packet::ip::IpNextHeaderProtocols::{Udp, Icmpv6};
 use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
 use pnet::packet::Packet;
-use pnet::transport::{icmp_packet_iter, transport_channel};
+use pnet::transport::{icmpv6_packet_iter, transport_channel};
 use pnet::transport::TransportChannelType::Layer4;
 
 const UDP_BUFFER_SIZE: usize = 8;
@@ -15,12 +15,9 @@ const SOURCE_PORT: u16 = 33434;
 
 pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
     let destination_port = args.port.unwrap_or(33434);
-    let udp_protocol = match address {
-        IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Udp),
-        IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv4(Udp),
-    };
+    let udp_protocol = pnet::transport::TransportProtocol::Ipv6(Udp);
     let icmp_protocol = match address {
-        IpAddr::V4(_) => pnet::transport::TransportProtocol::Ipv4(Icmp),
+        IpAddr::V4(_) => unreachable!("passing ipv4 address to ipv6 probe"),
         IpAddr::V6(_) => pnet::transport::TransportProtocol::Ipv6(Icmpv6),
     };
 
@@ -32,7 +29,7 @@ pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
         .context("creating icmp transport channel")?;
 
     let timeout = Duration::from_millis(args.timeout);
-    let mut res_icmp_iter = icmp_packet_iter(&mut rx);
+    let mut res_icmp_iter = icmpv6_packet_iter(&mut rx);
 
     for ttl in 1..=args.hops {
         let mut target_hit = false;
@@ -55,25 +52,23 @@ pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
 
             let mut got_response = false;
             while start_time.elapsed() < timeout {
-                if let Ok(Some((packet, address))) = res_icmp_iter.next_with_timeout(timeout) {
-                    if let Some(icmp_packet) = IcmpPacket::new(packet.packet()) {
-                        let resp_source_port = extract_udp_source_from_icmp_reply(&icmp_packet, args.v6);
-                        if let Some(resp_source_port) = resp_source_port {
-                            if resp_source_port == SOURCE_PORT + (ttl as u16) {
-                                match icmp_packet.get_icmp_type() {
-                                    IcmpTypes::TimeExceeded => {
-                                        res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
-                                        got_response = true;
-                                        break;
-                                    },
-                                    IcmpTypes::DestinationUnreachable => {
-                                        res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
-                                        target_hit = true;
-                                        got_response = true;
-                                        break;
-                                    },
-                                    _ => {}
-                                }
+                if let Ok(Some((icmp_packet, address))) = res_icmp_iter.next_with_timeout(timeout) {
+                    let resp_source_port = extract_udp_source_from_icmp_reply(&icmp_packet);
+                    if let Some(resp_source_port) = resp_source_port {
+                        if resp_source_port == SOURCE_PORT + (ttl as u16) {
+                            match icmp_packet.get_icmpv6_type() {
+                                Icmpv6Types::TimeExceeded => {
+                                    res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
+                                    got_response = true;
+                                    break;
+                                },
+                                Icmpv6Types::DestinationUnreachable => {
+                                    res_printer.push_hop(Probe::Response(address, start_time.elapsed()));
+                                    target_hit = true;
+                                    got_response = true;
+                                    break;
+                                },
+                                _ => {}
                             }
                         }
                     }
@@ -87,11 +82,11 @@ pub fn udp_probe(address: IpAddr, args: Command) -> Result<()> {
     Ok(())
 }
 
-fn extract_udp_source_from_icmp_reply<'a>(icmp_packet: &'a IcmpPacket, is_ipv6: bool) -> Option<u16> {
+fn extract_udp_source_from_icmp_reply<'a>(icmp_packet: &'a Icmpv6Packet) -> Option<u16> {
     let icmp_payload = icmp_packet.payload();
 
     // +4 because there is four bytes of padding added to the beginning of the payload
-    let ip_header_len = if is_ipv6 { 40 } else { 20 } + 4;
+    let ip_header_len = 40 + 4;
 
     if icmp_payload.len() < ip_header_len + 8 { return None; }
 
