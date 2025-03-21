@@ -36,22 +36,39 @@ fn main() {
         true => {
             let addr = Ipv4Addr::from_str(&args.address);
             match addr {
-                Ok(addr) => IpAddr::V4(addr),
-                Err(_e) => {
-                    println!("Invalid IPv4 address, exiting...");
-                    return;
-                }
+                Ok(addr) => Some(IpAddr::V4(addr)),
+                Err(_e) => { None }
             }
         },
         false => {
             let addr = Ipv6Addr::from_str(&args.address);
             match addr {
-                Ok(addr) => IpAddr::V6(addr),
-                Err(_e) => {
-                    println!("Invalid IPv6 address, exiting...");
-                    return;
-                }
+                Ok(addr) => Some(IpAddr::V6(addr)),
+                Err(_e) => { None }
             }
+        }
+    };
+
+    let addr = if let Some(addr) = addr {
+        addr
+    } else {
+        let ips = dns_lookup::lookup_host(&args.address);
+        if let Err(e) = ips {
+            println!("Error resolving domain: {}", e);
+            return;
+        }
+        let ips = ips.unwrap();
+
+        let valid_ips: Vec<IpAddr> = ips.into_iter().filter(|ip| match ip {
+            IpAddr::V4(_) => {args.v4}
+            IpAddr::V6(_) => {args.v6}
+        }).collect();
+
+        if let Some(addr) = valid_ips.first() {
+            *addr
+        } else {
+            println!("Cannot resolve the provided hostname");
+            return;
         }
     };
 
