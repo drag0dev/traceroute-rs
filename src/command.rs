@@ -10,7 +10,7 @@ pub struct Command {
     #[arg(long)]
     pub v6: bool,
 
-    #[arg(long, default_value_t = 5000)]
+    #[arg(long, default_value_t = 2000)]
     pub timeout: u64,
 
     #[arg(long, default_value_t = 30)]
