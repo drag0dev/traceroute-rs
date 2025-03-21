@@ -20,15 +20,18 @@ fn main() {
     let args = Command::parse();
 
     if (args.v4 && args.v6) || (!args.v4 && !args.v6) {
-        println!("Malformed input, missing v4 or v6 swtich");
+        println!("Malformed input, missing v4 or v6 switch");
         return;
     }
 
     let mut tracerouting_method_count = args.icmp as usize;
     tracerouting_method_count += args.udp as usize;
     tracerouting_method_count += args.tcp as usize;
-    if tracerouting_method_count != 1 {
-        println!("Malformed input, only one method of tracerouting must be selected");
+    if tracerouting_method_count > 1 {
+        println!("Only one method for tracerouting must be selected");
+        return;
+    } else if tracerouting_method_count == 0 {
+        println!("Method for tracerouting has to be specified");
         return;
     }
 
